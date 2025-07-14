@@ -1,6 +1,12 @@
 //! Collection of methods for images.
 
-use std::{cmp::Ordering, error::Error, fmt, str::FromStr, time::Duration};
+#[cfg(target_os = "macos")]
+use image::{AnimationDecoder, DynamicImage, ImageError as ImageCrateError};
+use std::{cmp::Ordering, error::Error, fmt, str::FromStr};
+#[cfg(target_os = "linux")]
+use std::time::Duration;
+#[cfg(target_os = "macos")]
+use std::sync::Arc;
 
 use gettextrs::gettext;
 use gtk::{gdk, gio, glib, graphene, gsk, prelude::*};
@@ -27,9 +33,12 @@ mod queue;
 pub(crate) use queue::{IMAGE_QUEUE, ImageRequestPriority};
 
 use super::{FrameDimensions, MediaFileError};
+#[cfg(target_os = "linux")]
+use crate::DISABLE_GLYCIN_SANDBOX;
 use crate::{
-    DISABLE_GLYCIN_SANDBOX, RUNTIME,
+    RUNTIME,
     components::AnimatedImagePaintable,
+    spawn_tokio,
     utils::{File, save_data_to_tmp_file},
 };
 
@@ -74,6 +83,73 @@ enum ImageDecoderSource {
     File(File),
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+pub enum ImageData {
+    Static(DynamicImage),
+    Animated {
+        frames: Vec<ImageFrame>,
+        current_index: usize,
+    },
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+pub struct ImageFrame {
+    pub image: DynamicImage,
+    pub delay: Option<std::time::Duration>,
+}
+
+/// Decode image bytes using the `image` crate (macOS only).
+#[cfg(target_os = "macos")]
+fn image_loader_from_bytes(bytes: &[u8]) -> Result<ImageData, ImageError> {
+    use std::io::Cursor;
+
+    if let Ok(decoder) = image::codecs::gif::GifDecoder::new(Cursor::new(bytes)) {
+        let frames_result: Result<Vec<_>, _> = decoder.into_frames().collect();
+
+        if let Ok(frames) = frames_result {
+            let image_frames: Vec<ImageFrame> = frames
+                .into_iter()
+                .map(|frame| {
+                    let (numer, denom) = frame.delay().numer_denom_ms();
+                    ImageFrame {
+                        image: DynamicImage::ImageRgba8(frame.into_buffer()),
+                        delay: Some(std::time::Duration::from_millis(
+                            (numer as u64 * 1000) / denom as u64,
+                        )),
+                    }
+                })
+                .collect();
+
+            if image_frames.len() > 1 {
+                return Ok(ImageData::Animated {
+                    frames: image_frames,
+                    current_index: 0,
+                });
+            }
+        }
+    }
+
+    let image = image::load_from_memory(bytes).map_err(|_| ImageError::UnsupportedFormat)?;
+    Ok(ImageData::Static(image))
+}
+
+/// Load image data from a file (macOS only).
+#[cfg(target_os = "macos")]
+async fn image_loader(file: gio::File) -> Result<ImageData, ImageError> {
+    let bytes = spawn_tokio!(async move {
+        let (bytes, _etag) = file
+            .load_bytes(None::<&gio::Cancellable>)
+            .map_err(|_| ImageError::File)?;
+        Ok::<_, ImageError>(bytes.to_vec())
+    })
+    .await
+    .expect("task was not aborted")?;
+
+    image_loader_from_bytes(&bytes)
+}
+
 impl ImageDecoderSource {
     /// The maximum size of the `Data` variant. This is 1 MB.
     const MAX_DATA_SIZE: usize = 1_048_576;
@@ -93,6 +169,7 @@ impl ImageDecoderSource {
     /// Convert this image source into a loader.
     ///
     /// Returns the created loader, and the image file, if any.
+    #[cfg(target_os = "linux")]
     fn into_loader(self) -> (glycin::Loader, Option<File>) {
         let (loader, file) = match self {
             Self::Data(bytes) => (
@@ -113,6 +190,7 @@ impl ImageDecoderSource {
     ///
     /// Set `request_dimensions` if the image will be shown at specific
     /// dimensions. To show the image at its natural size, set it to `None`.
+    #[cfg(target_os = "linux")]
     async fn decode_image(
         self,
         request_dimensions: Option<FrameDimensions>,
@@ -141,6 +219,51 @@ impl ImageDecoderSource {
             first_frame,
         })
     }
+
+    /// Decode this image source into an [`Image`] using the `image` crate.
+    #[cfg(target_os = "macos")]
+    async fn decode_image(
+        self,
+        request_dimensions: Option<FrameDimensions>,
+    ) -> Result<Image, ImageError> {
+        let (file, bytes): (Option<File>, Vec<u8>) = match self {
+            Self::Data(bytes) => (None, bytes),
+            Self::File(file) => {
+                let gfile = file.as_gfile().clone();
+                let raw_bytes = spawn_tokio!(async move {
+                    let (bytes, _) = gfile
+                        .load_bytes(None::<&gio::Cancellable>)
+                        .map_err(|_| ImageError::File)?;
+                    Ok::<_, ImageError>(bytes.to_vec())
+                })
+                .await
+                .expect("task was not aborted")?;
+                (Some(file), raw_bytes)
+            }
+        };
+
+        let image_data = image_loader_from_bytes(&bytes)?;
+
+        let processed_data = if let Some(dims) = request_dimensions {
+            scale_image_data(image_data, dims)?
+        } else {
+            image_data
+        };
+
+        let first_frame = match &processed_data {
+            ImageData::Static(img) => Frame::new_from_dynamic_image(img.clone()),
+            ImageData::Animated { frames, .. } => frames
+                .first()
+                .map(|f| Frame::new_from_dynamic_image(f.image.clone()))
+                .ok_or(ImageError::Unknown)?,
+        };
+
+        Ok(Image {
+            file,
+            image_data: Arc::new(processed_data),
+            first_frame: Arc::new(first_frame),
+        })
+    }
 }
 
 impl From<File> for ImageDecoderSource {
@@ -155,7 +278,46 @@ impl From<gio::File> for ImageDecoderSource {
     }
 }
 
+
+#[cfg(target_os = "macos")]
+fn scale_image_data(
+    data: ImageData,
+    target_dimensions: FrameDimensions,
+) -> Result<ImageData, ImageError> {
+    match data {
+        ImageData::Static(img) => {
+            let scaled = img.resize(
+                target_dimensions.width,
+                target_dimensions.height,
+                image::imageops::FilterType::Lanczos3,
+            );
+            Ok(ImageData::Static(scaled))
+        }
+        ImageData::Animated {
+            frames,
+            current_index,
+        } => {
+            let scaled_frames = frames
+                .into_iter()
+                .map(|frame| ImageFrame {
+                    image: frame.image.resize(
+                        target_dimensions.width,
+                        target_dimensions.height,
+                        image::imageops::FilterType::Lanczos3,
+                    ),
+                    delay: frame.delay,
+                })
+                .collect();
+            Ok(ImageData::Animated {
+                frames: scaled_frames,
+                current_index,
+            })
+        }
+    }
+}
+
 /// An image that was just loaded.
+#[cfg(target_os = "linux")]
 #[derive(Clone)]
 pub(crate) struct Image {
     /// The file containing the image, if any.
@@ -169,6 +331,20 @@ pub(crate) struct Image {
     first_frame: glycin::Frame,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+pub(crate) struct Image {
+    /// The file containing the image, if any.
+    ///
+    /// We need to keep a strong reference to the temporary file or it will be
+    /// destroyed.
+    file: Option<File>,
+    /// The loaded image data.
+    image_data: Arc<ImageData>,
+    /// The first frame of the image.
+    first_frame: Arc<Frame>,
+}
+
 impl fmt::Debug for Image {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Image").finish_non_exhaustive()
@@ -177,8 +353,17 @@ impl fmt::Debug for Image {
 
 impl From<Image> for gdk::Paintable {
     fn from(value: Image) -> Self {
-        if value.first_frame.has_delay() {
-            AnimatedImagePaintable::new(value.decoder, value.first_frame, value.file).upcast()
+        if value.first_frame.delay().is_some() {
+            #[cfg(target_os = "linux")]
+            {
+                AnimatedImagePaintable::new(value.decoder, value.first_frame, value.file).upcast()
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                AnimatedImagePaintable::new(value.file, value.image_data, value.first_frame)
+                    .upcast()
+            }
         } else {
             value.first_frame.texture().upcast()
         }
@@ -201,16 +386,37 @@ impl ImageInfoLoader {
     async fn into_first_frame(self) -> Option<Frame> {
         match self {
             Self::File(file) => {
-                let (loader, _) = ImageDecoderSource::from(file).into_loader();
-                let frame = loader
-                    .load_future()
-                    .await
-                    .ok()?
-                    .next_frame_future()
-                    .await
-                    .ok()?;
+                #[cfg(target_os = "linux")]
+                {
+                    let (loader, _) = ImageDecoderSource::from(file).into_loader();
+                    let frame = loader
+                        .load_future()
+                        .await
+                        .ok()?
+                        .next_frame_future()
+                        .await
+                        .ok()?;
 
-                Some(Frame::Glycin(frame))
+                    Some(Frame::Glycin(frame))
+                }
+
+                #[cfg(target_os = "macos")]
+                {
+                    let image_data = image_loader(file).await.ok()?;
+                    match image_data {
+                        ImageData::Static(img) => Some(Frame::new_from_dynamic_image(img)),
+                        ImageData::Animated { frames, .. } => {
+                            frames.first().map(|first_frame| {
+                                let mut frame =
+                                    Frame::new_from_dynamic_image(first_frame.image.clone());
+                                if let Frame::Image { delay, .. } = &mut frame {
+                                    *delay = first_frame.delay;
+                                }
+                                frame
+                            })
+                        }
+                    }
+                }
             }
             Self::Texture(texture) => Some(Frame::Texture(texture)),
         }
@@ -286,29 +492,85 @@ impl From<gdk::Texture> for ImageInfoLoader {
 
 /// A frame of an image.
 #[derive(Debug, Clone)]
-enum Frame {
+pub enum Frame {
     /// A frame loaded via glycin.
+    #[cfg(target_os = "linux")]
     Glycin(glycin::Frame),
+    #[cfg(target_os = "macos")]
+    Image {
+        image: DynamicImage,
+        texture: gdk::Texture,
+        delay: Option<std::time::Duration>,
+    },
     /// A texture in memory,
     Texture(gdk::Texture),
 }
 
 impl Frame {
+    #[cfg(target_os = "macos")]
+    pub fn new_from_dynamic_image(image: DynamicImage) -> Self {
+        let rgba = image.to_rgba8();
+        let w = rgba.width();
+        let texture = gdk::MemoryTexture::new(
+            w as i32,
+            rgba.height() as i32,
+            gdk::MemoryFormat::R8g8b8a8,
+            &glib::Bytes::from(&rgba.into_raw()),
+            w as usize * 4,
+        );
+
+        Self::Image {
+            image,
+            texture: texture.upcast(),
+            delay: None,
+        }
+    }
     /// The dimensions of the frame.
-    fn dimensions(&self) -> Option<FrameDimensions> {
+    pub fn dimensions(&self) -> Option<FrameDimensions> {
         match self {
+            #[cfg(target_os = "linux")]
             Self::Glycin(frame) => Some(FrameDimensions {
                 width: frame.width(),
                 height: frame.height(),
             }),
+            #[cfg(target_os = "macos")]
+            Self::Image { image, .. } => Some(FrameDimensions {
+                width: image.width(),
+                height: image.height(),
+            }),
             Self::Texture(texture) => FrameDimensions::with_texture(texture),
+        }
+    }
+
+    /// Get the texture for this frame.
+    pub fn texture(&self) -> gdk::Texture {
+        match self {
+            #[cfg(target_os = "linux")]
+            Self::Glycin(frame) => frame.texture(),
+            #[cfg(target_os = "macos")]
+            Self::Image { texture, .. } => texture.clone(),
+            Self::Texture(texture) => texture.clone(),
+        }
+    }
+
+    /// The delay for this frame.
+    pub fn delay(&self) -> Option<std::time::Duration> {
+        match self {
+            #[cfg(target_os = "linux")]
+            Self::Glycin(frame) => frame.delay_duration(),
+            #[cfg(target_os = "macos")]
+            Self::Image { delay, .. } => *delay,
+            Self::Texture(_) => None,
         }
     }
 
     /// Whether the image that this frame belongs to is animated.
     fn is_animated(&self) -> bool {
         match self {
+            #[cfg(target_os = "linux")]
             Self::Glycin(frame) => frame.has_delay(),
+            #[cfg(target_os = "macos")]
+            Self::Image { delay, .. } => delay.is_some(),
             Self::Texture(_) => false,
         }
     }
@@ -327,7 +589,10 @@ impl Frame {
     /// Generate a Blurhash of this frame.
     fn generate_blurhash(self) -> Option<Blurhash> {
         let texture = match self {
+            #[cfg(target_os = "linux")]
             Self::Glycin(frame) => frame.texture(),
+            #[cfg(target_os = "macos")]
+            Self::Image { texture, .. } => texture,
             Self::Texture(texture) => texture,
         };
 
@@ -350,7 +615,10 @@ impl Frame {
         renderer: &gsk::Renderer,
     ) -> Option<(Thumbnail, Blurhash)> {
         let texture = match self {
+            #[cfg(target_os = "linux")]
             Self::Glycin(frame) => frame.texture(),
+            #[cfg(target_os = "macos")]
+            Self::Image { texture, .. } => texture,
             Self::Texture(texture) => texture,
         };
 
@@ -403,6 +671,7 @@ impl FrameDimensions {
 
     /// Convert these dimensions to a request for the image loader with the
     /// requested dimensions.
+    #[cfg(target_os = "linux")]
     fn to_image_loader_request(self, requested: Self) -> glycin::FrameRequest {
         let scaled = self.scale_to_fit(requested, gtk::ContentFit::Cover);
 
@@ -911,6 +1180,9 @@ pub(crate) enum ImageError {
     File,
     /// The image uses an unsupported format.
     UnsupportedFormat,
+    /// An I/O error occurred when loading the image (macOS only).
+    #[cfg(target_os = "macos")]
+    Io,
     /// An unexpected error occurred.
     Unknown,
     /// The request for the image was aborted.
@@ -931,6 +1203,8 @@ impl fmt::Display for ImageError {
         let s = match self {
             Self::Download => gettext("Could not retrieve media"),
             Self::UnsupportedFormat => gettext("Image format not supported"),
+            #[cfg(target_os = "macos")]
+            Self::Io |
             Self::File | Self::Unknown | Self::Aborted => gettext("An unexpected error occurred"),
         };
 
@@ -950,6 +1224,7 @@ impl From<MediaFileError> for ImageError {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl From<glib::Error> for ImageError {
     fn from(value: glib::Error) -> Self {
         Self::log_error(&value);
@@ -962,7 +1237,19 @@ impl From<glib::Error> for ImageError {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl From<ImageCrateError> for ImageError {
+    fn from(value: ImageCrateError) -> Self {
+        match value {
+            ImageCrateError::IoError(_) => Self::Io,
+            ImageCrateError::Unsupported(_) => Self::UnsupportedFormat,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 /// Extensions to [`glycin::Frame`].
+#[cfg(target_os = "linux")]
 pub(crate) trait GlycinFrameExt {
     /// Whether the frame has a delay, which means that the image is animated.
     fn has_delay(&self) -> bool;
@@ -975,6 +1262,7 @@ pub(crate) trait GlycinFrameExt {
     fn texture(&self) -> gdk::Texture;
 }
 
+#[cfg(target_os = "linux")]
 impl GlycinFrameExt for glycin::Frame {
     fn has_delay(&self) -> bool {
         // glycin always computes a suitable delay if the image is animated but its

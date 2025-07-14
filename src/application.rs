@@ -122,6 +122,23 @@ mod imp {
 
             // Set icons for shell
             gtk::Window::set_default_icon_name(crate::APP_ID);
+
+            // On macOS, launching from Terminal does not automatically make
+            // the new process the active application — the terminal keeps
+            // focus. Call activateIgnoringOtherApps so the window appears
+            // at the front and the menu bar switches to Fractal.
+            #[cfg(target_os = "macos")]
+            glib::idle_add_local_once(|| {
+                unsafe {
+                    use objc2::msg_send;
+                    use objc2::runtime::AnyObject;
+
+                    let cls = objc2::class!(NSApplication);
+                    let ns_app: *mut AnyObject = msg_send![cls, sharedApplication];
+                    let _: () = msg_send![ns_app, activateIgnoringOtherApps: true];
+                }
+            });
+
         }
 
         fn open(&self, files: &[gio::File], _hint: &str) {

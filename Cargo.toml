@@ -61,8 +61,6 @@ zeroize = "1"
 
 # gtk-rs project and dependents. These usually need to be updated together.
 adw = { version = "0.9", features = ["v1_8"], package = "libadwaita" }
-glycin = { version = "0.1", package = "libglycin-rebind" }
-glycin-gtk4 = { version = "0.1", package = "libglycin-gtk4-rebind" }
 gst = { version = "0.25", package = "gstreamer" }
 gst_app = { version = "0.25", package = "gstreamer-app" }
 gst_pbutils = { version = "0.25", package = "gstreamer-pbutils" }
@@ -132,6 +130,16 @@ oo7 = { version = "0.6", default-features = false, features = [
     "tokio",
     "tracing",
 ] }
+glycin = { git = "https://gitlab.gnome.org/GNOME/glycin", rev = "0865d33a7870a1cb8bf35c89f75d2cfab4129ee8", package = "libglycin-rebind" }
+glycin-gtk4 = { git = "https://gitlab.gnome.org/GNOME/glycin", rev = "0865d33a7870a1cb8bf35c89f75d2cfab4129ee8", package = "libglycin-gtk4-rebind" }
+
+# macOS-only dependencies.
+[target.'cfg(target_os = "macos")'.dependencies]
+dirs = "6"
+image = "0.25.6"
+libc = "0.2"
+objc2 = "0.6"
+security-framework = "2"
 
 [dev-dependencies]
 assert_matches2 = "0.1"

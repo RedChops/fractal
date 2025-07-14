@@ -1,30 +1,43 @@
+#[cfg(target_os = "macos")]
+use crate::utils::media::image::{Frame, ImageData};
+#[cfg(target_os = "linux")]
 use glycin::{Frame, Image};
 use gtk::{gdk, glib, glib::clone, graphene, prelude::*, subclass::prelude::*};
+#[cfg(target_os = "linux")]
 use tracing::error;
 
-use crate::{
-    prelude::*,
-    spawn,
-    utils::{CountedRef, File},
-};
+#[cfg(target_os = "linux")]
+use crate::{prelude::*, spawn};
+use crate::utils::{CountedRef, File};
 
 mod imp {
     use std::cell::{OnceCell, RefCell};
+    #[cfg(target_os = "macos")]
+    use std::sync::Arc;
 
     use super::*;
 
     #[derive(Default)]
     pub struct AnimatedImagePaintable {
-        /// The image decoder.
+        /// The image decoder (Linux only).
+        #[cfg(target_os = "linux")]
         decoder: OnceCell<Image>,
+        /// The decoded image data (macOS only).
+        #[cfg(target_os = "macos")]
+        image_data: OnceCell<Arc<ImageData>>,
         /// The file of the image.
         ///
         /// We need to keep a strong reference to the temporary file or it will
         /// be destroyed.
         file: OnceCell<File>,
-        /// The current frame that is displayed.
+        /// The current frame that is displayed (Linux).
+        #[cfg(target_os = "linux")]
         pub(super) current_frame: RefCell<Option<Frame>>,
-        /// The next frame of the animation, if any.
+        /// The current frame that is displayed (macOS).
+        #[cfg(target_os = "macos")]
+        pub(super) current_frame: RefCell<Option<Arc<Frame>>>,
+        /// The next frame of the animation, if any (Linux only).
+        #[cfg(target_os = "linux")]
         next_frame: RefCell<Option<Frame>>,
         /// The source ID of the timeout to load the next frame, if any.
         timeout_source_id: RefCell<Option<glib::SourceId>>,
@@ -32,6 +45,9 @@ mod imp {
         ///
         /// When the count is 0, the animation is paused.
         animation_ref: OnceCell<CountedRef>,
+        /// The current frame index of the animation (macOS only).
+        #[cfg(target_os = "macos")]
+        current_frame_index: RefCell<usize>,
     }
 
     #[glib::object_subclass]
@@ -45,21 +61,45 @@ mod imp {
 
     impl PaintableImpl for AnimatedImagePaintable {
         fn intrinsic_height(&self) -> i32 {
-            self.current_frame
-                .borrow()
-                .as_ref()
-                .map_or_else(|| self.decoder().height(), glycin::Frame::height)
-                .try_into()
-                .unwrap_or(i32::MAX)
+            #[cfg(target_os = "linux")]
+            {
+                self.current_frame
+                    .borrow()
+                    .as_ref()
+                    .map_or_else(|| self.decoder().height(), glycin::Frame::height)
+                    .try_into()
+                    .unwrap_or(i32::MAX)
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                self.current_frame
+                    .borrow()
+                    .as_ref()
+                    .and_then(|f| f.dimensions())
+                    .map_or(100, |d| d.height as i32)
+            }
         }
 
         fn intrinsic_width(&self) -> i32 {
-            self.current_frame
-                .borrow()
-                .as_ref()
-                .map_or_else(|| self.decoder().width(), glycin::Frame::width)
-                .try_into()
-                .unwrap_or(i32::MAX)
+            #[cfg(target_os = "linux")]
+            {
+                self.current_frame
+                    .borrow()
+                    .as_ref()
+                    .map_or_else(|| self.decoder().width(), glycin::Frame::width)
+                    .try_into()
+                    .unwrap_or(i32::MAX)
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                self.current_frame
+                    .borrow()
+                    .as_ref()
+                    .and_then(|f| f.dimensions())
+                    .map_or(100, |d| d.width as i32)
+            }
         }
 
         fn snapshot(&self, snapshot: &gdk::Snapshot, width: f64, height: f64) {
@@ -93,12 +133,14 @@ mod imp {
     }
 
     impl AnimatedImagePaintable {
-        /// The image decoder.
+        /// The image decoder (Linux only).
+        #[cfg(target_os = "linux")]
         fn decoder(&self) -> &Image {
             self.decoder.get().expect("decoder should be initialized")
         }
 
-        /// Initialize the image.
+        /// Initialize the image (Linux).
+        #[cfg(target_os = "linux")]
         pub(super) fn init(&self, decoder: Image, first_frame: Frame, file: Option<File>) {
             self.decoder
                 .set(decoder)
@@ -112,17 +154,58 @@ mod imp {
             self.update_animation();
         }
 
+        /// Initialize the image (macOS).
+        #[cfg(target_os = "macos")]
+        pub(super) fn init(
+            &self,
+            file: Option<File>,
+            image_data: Arc<ImageData>,
+            first_frame: Arc<Frame>,
+        ) {
+            if let Some(file) = file {
+                self.file.set(file).expect("file should be uninitialized");
+            }
+            self.image_data
+                .set(image_data)
+                .expect("image data should be uninitialized");
+            self.current_frame.replace(Some(first_frame));
+            self.current_frame_index.replace(0);
+
+            self.update_animation();
+        }
+
         /// Show the next frame of the animation.
         fn show_next_frame(&self) {
             // Drop the timeout source ID so we know we are not waiting for it.
             self.timeout_source_id.take();
 
-            let Some(next_frame) = self.next_frame.take() else {
-                // Wait for the next frame to be loaded.
-                return;
-            };
+            #[cfg(target_os = "linux")]
+            {
+                let Some(next_frame) = self.next_frame.take() else {
+                    // Wait for the next frame to be loaded.
+                    return;
+                };
 
-            self.current_frame.replace(Some(next_frame));
+                self.current_frame.replace(Some(next_frame));
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(image_data) = self.image_data.get() {
+                    if let ImageData::Animated { frames, .. } = image_data.as_ref() {
+                        let mut index = self.current_frame_index.borrow_mut();
+                        *index = (*index + 1) % frames.len();
+
+                        if let Some(frame_data) = frames.get(*index) {
+                            let mut frame = Frame::new_from_dynamic_image(frame_data.image.clone());
+                            if let Frame::Image { delay, .. } = &mut frame {
+                                *delay = frame_data.delay;
+                            }
+                            self.current_frame.replace(Some(Arc::new(frame)));
+                        }
+                    }
+                }
+            }
 
             // Invalidate the contents so that the new frame will be rendered.
             self.obj().invalidate_contents();
@@ -166,12 +249,17 @@ mod imp {
                 return;
             }
 
-            let Some(delay) = self
+            #[cfg(target_os = "linux")]
+            let delay = self
                 .current_frame
                 .borrow()
                 .as_ref()
-                .and_then(GlycinFrameExt::delay_duration)
-            else {
+                .and_then(GlycinFrameExt::delay_duration);
+
+            #[cfg(target_os = "macos")]
+            let delay = self.current_frame.borrow().as_ref().and_then(|f| f.delay());
+
+            let Some(delay) = delay else {
                 return;
             };
 
@@ -188,15 +276,19 @@ mod imp {
             );
             self.timeout_source_id.replace(Some(source_id));
 
-            spawn!(clone!(
-                #[weak(rename_to = imp)]
-                self,
-                async move {
-                    imp.load_next_frame_inner().await;
-                }
-            ));
+            #[cfg(target_os = "linux")]
+            {
+                spawn!(clone!(
+                    #[weak(rename_to = imp)]
+                    self,
+                    async move {
+                        imp.load_next_frame_inner().await;
+                    }
+                ));
+            }
         }
 
+        #[cfg(target_os = "linux")]
         async fn load_next_frame_inner(&self) {
             match self.decoder().next_frame_future().await {
                 Ok(next_frame) => {
@@ -223,13 +315,27 @@ glib::wrapper! {
 }
 
 impl AnimatedImagePaintable {
-    /// Construct an `AnimatedImagePaintable` with the given  decoder, first
+    /// Construct an `AnimatedImagePaintable` with the given decoder, first
     /// frame, and the file containing the image, if any.
+    #[cfg(target_os = "linux")]
     pub(crate) fn new(decoder: Image, first_frame: Frame, file: Option<File>) -> Self {
         let obj = glib::Object::new::<Self>();
 
         obj.imp().init(decoder, first_frame, file);
 
+        obj
+    }
+
+    /// Construct an `AnimatedImagePaintable` with the given image data, first
+    /// frame, and the file containing the image, if any.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn new(
+        file: Option<File>,
+        image_data: std::sync::Arc<ImageData>,
+        first_frame: std::sync::Arc<Frame>,
+    ) -> Self {
+        let obj = glib::Object::new::<Self>();
+        obj.imp().init(file, image_data, first_frame);
         obj
     }
 

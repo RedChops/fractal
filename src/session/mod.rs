@@ -418,12 +418,41 @@ mod imp {
             let stream = BroadcastStream::new(receiver);
 
             let obj_weak = glib::SendWeakRef::from(self.obj().downgrade());
+            // On macOS, pre-capture client and session info so that
+            // TokensRefreshed can be handled directly in the Tokio context.
+            // This avoids a race where the GLib main loop (which runs as a
+            // guest of AppKit's event loop) may not drain pending tasks before
+            // the process exits, causing refreshed token writes to be lost and
+            // triggering invalid_grant errors on the next launch.
+            #[cfg(target_os = "macos")]
+            let macos_client = self.client().clone();
+            #[cfg(target_os = "macos")]
+            let macos_session_info = self.obj().info().clone();
             let fut = stream.for_each(move |change| {
                 let obj_weak = obj_weak.clone();
+                #[cfg(target_os = "macos")]
+                let macos_client = macos_client.clone();
+                #[cfg(target_os = "macos")]
+                let macos_session_info = macos_session_info.clone();
                 async move {
                     let Ok(change) = change else {
                         return;
                     };
+
+                    // On macOS, write refreshed tokens directly from the Tokio
+                    // context so they are always persisted regardless of whether
+                    // the GLib main loop gets another chance to run.
+                    #[cfg(target_os = "macos")]
+                    if let SessionChange::TokensRefreshed = change {
+                        if let Some(tokens) = macos_client.session_tokens() {
+                            debug!(
+                                session = macos_session_info.id,
+                                "Storing updated session tokens…"
+                            );
+                            macos_session_info.store_tokens(tokens).await;
+                        }
+                        return;
+                    }
 
                     let ctx = glib::MainContext::default();
                     ctx.spawn(async move {
@@ -709,6 +738,14 @@ mod imp {
         /// This should only be called if the session has been logged out
         /// without calling `Session::log_out`.
         pub(super) async fn clean_up(&self) {
+            // Guard against multiple concurrent cleanup calls triggered by
+            // simultaneous UnknownToken events.  set_state() is synchronous so
+            // there is no await-point between the check and the transition,
+            // making this safe in GLib's single-threaded async executor.
+            if self.state.get() == SessionState::LoggedOut {
+                return;
+            }
+
             let obj = self.obj();
             self.set_state(SessionState::LoggedOut);
 

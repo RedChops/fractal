@@ -10,7 +10,9 @@ pub(crate) use crate::{
     utils::{
         ChildPropertyExt, IsABin, LocationExt,
         matrix::ext_traits::*,
-        media::image::GlycinFrameExt,
         string::{OptionStringExt, StrExt, StrMutExt},
     },
 };
+
+#[cfg(target_os = "linux")]
+pub(crate) use crate::utils::media::image::GlycinFrameExt;
