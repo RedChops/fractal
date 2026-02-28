@@ -1408,7 +1408,6 @@ dependencies = [
  "image",
  "indexmap",
  "libadwaita",
- "libc",
  "libglycin-gtk4-rebind",
  "libglycin-rebind",
  "libshumate",

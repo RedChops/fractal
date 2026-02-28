@@ -1,3 +1,60 @@
+# Fractal macOS Port
+
+> **Note**: This is a fork of [gitlab.gnome.org/World/fractal](https://gitlab.gnome.org/World/fractal/)
+> ported to run natively on macOS, based on Fractal 13. It tracks upstream closely with the minimum
+> set of changes required to build and run on macOS.
+
+## macOS-specific Changes
+
+This fork includes the following modifications to make Fractal work on macOS:
+
+- Replaced `glycin` image loading with the `image` crate (`glycin` requires `libseccomp`, a
+  Linux-only kernel interface). This is a temporary dependency — it will be removed once libglycin
+  gains native macOS support.
+- Implemented macOS Keychain Services for secure credential storage (access token and database
+  passphrase) in place of the Secret Service API.
+- Added conditional compilation for all platform-specific code paths.
+- Animated GIFs are fully supported: frames are decoded eagerly and cycled by `AnimatedImagePaintable`.
+- Camera QR scanning and location sharing are not available on macOS.
+
+### Building on macOS
+
+Prerequisites:
+
+- macOS 13 (Ventura) or later
+- Homebrew
+
+```bash
+brew install gtk4 glib gsettings-desktop-schemas meson ninja gtksourceview5 \
+             gstreamer libadwaita libshumate lcms2 dylibbundler librsvg
+```
+
+#### Development iteration
+
+`cargo build --release` is useful for fast compilation checks, but **`cargo run` will not work**: the
+binary requires GResource bundles and GSettings schemas that are only present when running inside the
+`.app` bundle. Use the full bundle workflow below for all runs.
+
+#### Full `.app` bundle
+
+Produces a self-contained `Fractal.app` with all dylib dependencies bundled and an ad-hoc code
+signature applied. Requires `dylibbundler` and `librsvg` (both installed above).
+
+```bash
+meson setup builddir -Ddisable-glycin-sandbox=true
+meson compile -C builddir    # compiles the binary and GResource bundles
+bash macos/create-app.sh     # assembles Fractal.app in the repo root
+open Fractal.app             # launch
+```
+
+To install system-wide:
+
+```bash
+cp -r Fractal.app /Applications/
+```
+
+---
+
 [![Our chat room](https://img.shields.io/matrix/fractal-gtk:matrix.org?color=blue&label=%23fractal%3Agnome.org&logo=matrix)](https://matrix.to/#/#fractal:gnome.org)
 [![Our Gitlab project](https://img.shields.io/badge/gitlab.gnome.org%2F-World%2FFractal-green?logo=gitlab)](https://gitlab.gnome.org/World/fractal/)
 [![Our documentation](https://img.shields.io/badge/%F0%9F%95%AE-Docs-B7410E?logo=rust)](https://world.pages.gitlab.gnome.org/fractal/)

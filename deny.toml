@@ -6,6 +6,12 @@ targets = [
 
 [advisories]
 yanked = "deny"
+ignore = [
+    # paste is an indirect transitive dep of the `image` crate (macOS-only path:
+    # image → ravif → rav1e → paste). The advisory is about maintenance status
+    # only, not a security vulnerability. No safe upgrade exists.
+    { id = "RUSTSEC-2024-0436" },
+]
 
 [bans]
 multiple-versions = "allow"
@@ -27,6 +33,12 @@ allow = [
     "Unicode-3.0",
     "Zlib",
 ]
+
+# libfuzzer-sys is an indirect dep of the `image` crate (macOS-only path:
+# image → ravif → rav1e → libfuzzer-sys). NCSA is FSF-free and GPL-compatible.
+[[licenses.exceptions]]
+allow = ["NCSA"]
+name = "libfuzzer-sys"
 
 [sources]
 unknown-git = "deny"

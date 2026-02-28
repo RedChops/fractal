@@ -1,15 +1,15 @@
 //! Collection of methods for images.
 
 #[cfg(target_os = "macos")]
-use image::{AnimationDecoder, DynamicImage, ImageError as ImageCrateError};
-use std::{cmp::Ordering, error::Error, fmt, str::FromStr};
+use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
-#[cfg(target_os = "macos")]
-use std::sync::Arc;
+use std::{cmp::Ordering, error::Error, fmt, str::FromStr};
 
 use gettextrs::gettext;
 use gtk::{gdk, gio, glib, graphene, gsk, prelude::*};
+#[cfg(target_os = "macos")]
+use image::{AnimationDecoder, DynamicImage, ImageError as ImageCrateError};
 use matrix_sdk::{
     Client,
     attachment::{BaseImageInfo, Thumbnail},
@@ -101,6 +101,11 @@ pub struct ImageFrame {
 }
 
 /// Decode image bytes using the `image` crate (macOS only).
+///
+/// macOS: glycin (the upstream image loader) requires libseccomp, a Linux-only
+/// kernel interface. The `image` crate is used here as a temporary replacement.
+/// This function and the macOS-specific types above should be removed once
+/// libglycin gains native macOS support.
 #[cfg(target_os = "macos")]
 fn image_loader_from_bytes(bytes: &[u8]) -> Result<ImageData, ImageError> {
     use std::io::Cursor;
@@ -116,7 +121,7 @@ fn image_loader_from_bytes(bytes: &[u8]) -> Result<ImageData, ImageError> {
                     ImageFrame {
                         image: DynamicImage::ImageRgba8(frame.into_buffer()),
                         delay: Some(std::time::Duration::from_millis(
-                            (numer as u64 * 1000) / denom as u64,
+                            (u64::from(numer) * 1000) / u64::from(denom),
                         )),
                     }
                 })
@@ -245,7 +250,7 @@ impl ImageDecoderSource {
         let image_data = image_loader_from_bytes(&bytes)?;
 
         let processed_data = if let Some(dims) = request_dimensions {
-            scale_image_data(image_data, dims)?
+            scale_image_data(image_data, dims)
         } else {
             image_data
         };
@@ -278,21 +283,14 @@ impl From<gio::File> for ImageDecoderSource {
     }
 }
 
-
 #[cfg(target_os = "macos")]
-fn scale_image_data(
-    data: ImageData,
-    target_dimensions: FrameDimensions,
-) -> Result<ImageData, ImageError> {
+fn scale_image_data(data: ImageData, target_dimensions: FrameDimensions) -> ImageData {
     match data {
-        ImageData::Static(img) => {
-            let scaled = img.resize(
-                target_dimensions.width,
-                target_dimensions.height,
-                image::imageops::FilterType::Lanczos3,
-            );
-            Ok(ImageData::Static(scaled))
-        }
+        ImageData::Static(img) => ImageData::Static(img.resize(
+            target_dimensions.width,
+            target_dimensions.height,
+            image::imageops::FilterType::Lanczos3,
+        )),
         ImageData::Animated {
             frames,
             current_index,
@@ -308,10 +306,10 @@ fn scale_image_data(
                     delay: frame.delay,
                 })
                 .collect();
-            Ok(ImageData::Animated {
+            ImageData::Animated {
                 frames: scaled_frames,
                 current_index,
-            })
+            }
         }
     }
 }
@@ -405,16 +403,14 @@ impl ImageInfoLoader {
                     let image_data = image_loader(file).await.ok()?;
                     match image_data {
                         ImageData::Static(img) => Some(Frame::new_from_dynamic_image(img)),
-                        ImageData::Animated { frames, .. } => {
-                            frames.first().map(|first_frame| {
-                                let mut frame =
-                                    Frame::new_from_dynamic_image(first_frame.image.clone());
-                                if let Frame::Image { delay, .. } = &mut frame {
-                                    *delay = first_frame.delay;
-                                }
-                                frame
-                            })
-                        }
+                        ImageData::Animated { frames, .. } => frames.first().map(|first_frame| {
+                            let mut frame =
+                                Frame::new_from_dynamic_image(first_frame.image.clone());
+                            if let Frame::Image { delay, .. } = &mut frame {
+                                *delay = first_frame.delay;
+                            }
+                            frame
+                        }),
                     }
                 }
             }
@@ -512,8 +508,8 @@ impl Frame {
         let rgba = image.to_rgba8();
         let w = rgba.width();
         let texture = gdk::MemoryTexture::new(
-            w as i32,
-            rgba.height() as i32,
+            w.cast_signed(),
+            rgba.height().cast_signed(),
             gdk::MemoryFormat::R8g8b8a8,
             &glib::Bytes::from(&rgba.into_raw()),
             w as usize * 4,
@@ -1204,8 +1200,9 @@ impl fmt::Display for ImageError {
             Self::Download => gettext("Could not retrieve media"),
             Self::UnsupportedFormat => gettext("Image format not supported"),
             #[cfg(target_os = "macos")]
-            Self::Io |
-            Self::File | Self::Unknown | Self::Aborted => gettext("An unexpected error occurred"),
+            Self::Io | Self::File | Self::Unknown | Self::Aborted => {
+                gettext("An unexpected error occurred")
+            }
         };
 
         f.write_str(&s)

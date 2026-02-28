@@ -66,9 +66,13 @@ mod unimplemented {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum LocationError {
     /// The user cancelled the request to get the location.
+    // Constructed only by the Linux location backend.
+    #[allow(dead_code)]
     Cancelled,
     /// The location services are disabled on the system.
     Disabled,
     /// Another error occurred.
+    // Constructed only by the Linux location backend.
+    #[allow(dead_code)]
     Other,
 }

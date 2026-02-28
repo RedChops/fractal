@@ -1,3 +1,8 @@
+[files]
+extend-exclude = [
+    "Fractal.app",  # macOS app bundle build artifact
+]
+
 [default.extend-words]
 gir = "gir"
 inout = "inout"

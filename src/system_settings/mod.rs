@@ -81,6 +81,7 @@ impl SystemSettings {
     }
 
     /// Set the clock format setting.
+    #[cfg(target_os = "linux")]
     fn set_clock_format(&self, clock_format: ClockFormat) {
         if self.clock_format() == clock_format {
             return;

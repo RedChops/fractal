@@ -35,8 +35,10 @@ dependency('gstreamer-pbutils-1.0', version: '>= 1.20')
 dependency('gstreamer-play-1.0', version: '>= 1.20')
 dependency('gstreamer-video-1.0', version: '>= 1.20')
 dependency('gtksourceview-5', version: '>= 5.0.0')
-dependency('glycin-2', version: '>= 2.0.0')
-dependency('glycin-gtk4-2', version: '>= 2.0.0')
+if host_machine.system() == 'linux'
+    dependency('glycin-2', version: '>= 2.0.0')
+    dependency('glycin-gtk4-2', version: '>= 2.0.0')
+endif
 dependency('libwebp', version: '>= 1.0.0')
 dependency('openssl', version: '>= 3.0.0')
 dependency('shumate-1.0', version: '>= 1.1.0')

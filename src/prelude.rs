@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+pub(crate) use crate::utils::media::image::GlycinFrameExt;
 pub(crate) use crate::{
     components::{
         CameraExt, ContextMenuBinExt, ContextMenuBinImpl, PillSourceExt, PillSourceImpl,
@@ -13,6 +15,3 @@ pub(crate) use crate::{
         string::{OptionStringExt, StrExt, StrMutExt},
     },
 };
-
-#[cfg(target_os = "linux")]
-pub(crate) use crate::utils::media::image::GlycinFrameExt;

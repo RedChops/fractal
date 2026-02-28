@@ -45,7 +45,7 @@ static MEDIA_FILE_NOTIFIER: LazyLock<OneshotNotifier> =
     LazyLock::new(|| OneshotNotifier::new("MEDIA_FILE_NOTIFIER"));
 
 /// When running inside a `.app` bundle, set runtime environment variables to
-/// point at bundle-relative paths for GLib, GStreamer, and GDK-Pixbuf.
+/// point at bundle-relative paths for `GLib`, `GStreamer`, and GDK-Pixbuf.
 /// Must be called before any library initialisation.
 #[cfg(target_os = "macos")]
 fn setup_bundle_env() {
@@ -75,10 +75,7 @@ fn setup_bundle_env() {
         resources.join("share/glib-2.0/schemas")
     );
     set_if_unset!("GIO_MODULE_DIR", resources.join("lib/gio/modules"));
-    set_if_unset!(
-        "GST_PLUGIN_PATH",
-        resources.join("lib/gstreamer-1.0")
-    );
+    set_if_unset!("GST_PLUGIN_PATH", resources.join("lib/gstreamer-1.0"));
     set_if_unset!(
         "GST_PLUGIN_SCANNER_1_0",
         resources.join("lib/gstreamer-1.0/gst-plugin-scanner")
@@ -120,9 +117,9 @@ fn main() {
             rlim_max: 0,
         };
         // SAFETY: rl is a valid, correctly-aligned C struct.
-        if unsafe { getrlimit(RLIMIT_NOFILE, &mut rl) } == 0 && rl.rlim_cur < 1024 {
+        if unsafe { getrlimit(RLIMIT_NOFILE, &raw mut rl) } == 0 && rl.rlim_cur < 1024 {
             rl.rlim_cur = rl.rlim_max.min(1024);
-            unsafe { setrlimit(RLIMIT_NOFILE, &rl) };
+            unsafe { setrlimit(RLIMIT_NOFILE, &raw const rl) };
         }
     }
 
@@ -155,22 +152,23 @@ fn main() {
     aperture::init(APP_ID);
 
     #[cfg(target_os = "macos")]
-    let resources_path = bundle_resources_dir()
-        .map(|d| d.join("resources.gresource"))
-        .unwrap_or_else(|| std::path::PathBuf::from(RESOURCES_FILE));
+    let resources_path = bundle_resources_dir().map_or_else(
+        || std::path::PathBuf::from(RESOURCES_FILE),
+        |d| d.join("resources.gresource"),
+    );
     #[cfg(not(target_os = "macos"))]
     let resources_path = std::path::PathBuf::from(RESOURCES_FILE);
     let res = gio::Resource::load(&resources_path).expect("Could not load gresource file");
     gio::resources_register(&res);
 
     #[cfg(target_os = "macos")]
-    let ui_resources_path = bundle_resources_dir()
-        .map(|d| d.join("ui-resources.gresource"))
-        .unwrap_or_else(|| std::path::PathBuf::from(UI_RESOURCES_FILE));
+    let ui_resources_path = bundle_resources_dir().map_or_else(
+        || std::path::PathBuf::from(UI_RESOURCES_FILE),
+        |d| d.join("ui-resources.gresource"),
+    );
     #[cfg(not(target_os = "macos"))]
     let ui_resources_path = std::path::PathBuf::from(UI_RESOURCES_FILE);
-    let ui_res =
-        gio::Resource::load(&ui_resources_path).expect("Could not load UI gresource file");
+    let ui_res = gio::Resource::load(&ui_resources_path).expect("Could not load UI gresource file");
     gio::resources_register(&ui_res);
 
     IconTheme::for_display(&Display::default().unwrap())

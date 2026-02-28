@@ -15,7 +15,7 @@ pub(crate) struct MacOSLocation;
 
 impl MacOSLocation {
     pub(crate) fn new() -> Self {
-        Self::default()
+        Self
     }
 }
 

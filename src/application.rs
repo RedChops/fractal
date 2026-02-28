@@ -2,7 +2,7 @@ use std::{borrow::Cow, cell::RefCell, fmt, rc::Rc};
 
 use adw::{prelude::*, subclass::prelude::*};
 use gettextrs::gettext;
-use gtk::{gio, glib, glib::clone};
+use gtk::{gdk, gio, glib, glib::clone};
 use tracing::{debug, error, info, warn};
 
 use crate::{
@@ -123,22 +123,40 @@ mod imp {
             // Set icons for shell
             gtk::Window::set_default_icon_name(crate::APP_ID);
 
-            // On macOS, launching from Terminal does not automatically make
-            // the new process the active application — the terminal keeps
-            // focus. Call activateIgnoringOtherApps so the window appears
-            // at the front and the menu bar switches to Fractal.
+            // macOS: GTK runs as a guest of AppKit's event loop. When launched
+            // from Terminal the new process does not automatically become the
+            // active application — the terminal retains focus. Calling
+            // activateIgnoringOtherApps brings the window to the front and
+            // switches the menu bar to Fractal.
+            //
+            // Note: activateIgnoringOtherApps: is deprecated in macOS 14 in
+            // favour of NSApplication.activate(), but it remains functional on
+            // all supported macOS versions.
             #[cfg(target_os = "macos")]
-            glib::idle_add_local_once(|| {
-                unsafe {
-                    use objc2::msg_send;
-                    use objc2::runtime::AnyObject;
+            glib::idle_add_local_once(|| unsafe {
+                use objc2::{msg_send, runtime::AnyObject};
 
-                    let cls = objc2::class!(NSApplication);
-                    let ns_app: *mut AnyObject = msg_send![cls, sharedApplication];
-                    let _: () = msg_send![ns_app, activateIgnoringOtherApps: true];
-                }
+                let cls = objc2::class!(NSApplication);
+                let ns_app: *mut AnyObject = msg_send![cls, sharedApplication];
+                let _: () = msg_send![ns_app, activateIgnoringOtherApps: true];
             });
 
+            // macOS: GTK4 rasterizes text via Cairo's image-surface backend rather
+            // than CoreText's native CGContext, so CoreText's font dilation and
+            // per-pixel hinting are never applied. Enabling hint-font-metrics snaps
+            // glyph baselines to pixel boundaries, eliminating the soft/thin
+            // appearance on 1x displays. Setting font-rendering=Manual is required
+            // for GTK 4.16+ to honour the xft-* properties on non-GNOME platforms.
+            #[cfg(target_os = "macos")]
+            if let Some(display) = gdk::Display::default() {
+                let settings = gtk::Settings::for_display(&display);
+                settings.set_gtk_font_rendering(gtk::FontRendering::Manual);
+                settings.set_gtk_hint_font_metrics(true);
+                settings.set_gtk_xft_antialias(1);
+                settings.set_gtk_xft_hinting(1);
+                settings.set_gtk_xft_hintstyle(Some("hintmedium"));
+                settings.set_gtk_xft_rgba(Some("none"));
+            }
         }
 
         fn open(&self, files: &[gio::File], _hint: &str) {

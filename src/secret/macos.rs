@@ -129,8 +129,8 @@ fn upsert_session(service: &str, session: &StoredSession) -> Result<(), MacOSSec
         list.sessions.push(new_entry);
     }
 
-    let data = serde_json::to_vec(&list)
-        .map_err(|e| MacOSSecretError::Serialization(e.to_string()))?;
+    let data =
+        serde_json::to_vec(&list).map_err(|e| MacOSSecretError::Serialization(e.to_string()))?;
     set_generic_password(service, SESSIONS_ACCOUNT, &data)
         .map_err(|e| MacOSSecretError::KeychainAccess(e.to_string()))
 }
@@ -166,8 +166,8 @@ fn remove_session(service: &str, account: &str) -> Result<(), MacOSSecretError> 
 }
 
 fn deserialize_sessions(data: &[u8]) -> Result<Vec<StoredSession>, MacOSSecretError> {
-    let list: SessionList = serde_json::from_slice(data)
-        .map_err(|e| MacOSSecretError::Serialization(e.to_string()))?;
+    let list: SessionList =
+        serde_json::from_slice(data).map_err(|e| MacOSSecretError::Serialization(e.to_string()))?;
     list.sessions.into_iter().map(parse_session).collect()
 }
 
@@ -250,8 +250,8 @@ fn migrate_from_legacy(service: &str) -> Result<Vec<StoredSession>, MacOSSecretE
     let list = SessionList {
         sessions: legacy.clone(),
     };
-    let json = serde_json::to_vec(&list)
-        .map_err(|e| MacOSSecretError::Serialization(e.to_string()))?;
+    let json =
+        serde_json::to_vec(&list).map_err(|e| MacOSSecretError::Serialization(e.to_string()))?;
     set_generic_password(service, SESSIONS_ACCOUNT, &json)
         .map_err(|e| MacOSSecretError::KeychainAccess(e.to_string()))?;
 

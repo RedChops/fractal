@@ -1,14 +1,14 @@
-#[cfg(target_os = "macos")]
-use crate::utils::media::image::{Frame, ImageData};
 #[cfg(target_os = "linux")]
 use glycin::{Frame, Image};
 use gtk::{gdk, glib, glib::clone, graphene, prelude::*, subclass::prelude::*};
 #[cfg(target_os = "linux")]
 use tracing::error;
 
+#[cfg(target_os = "macos")]
+use crate::utils::media::image::{Frame, ImageData};
+use crate::utils::{CountedRef, File};
 #[cfg(target_os = "linux")]
 use crate::{prelude::*, spawn};
-use crate::utils::{CountedRef, File};
 
 mod imp {
     use std::cell::{OnceCell, RefCell};
@@ -77,7 +77,7 @@ mod imp {
                     .borrow()
                     .as_ref()
                     .and_then(|f| f.dimensions())
-                    .map_or(100, |d| d.height as i32)
+                    .map_or(100, |d| d.height.cast_signed())
             }
         }
 
@@ -98,7 +98,7 @@ mod imp {
                     .borrow()
                     .as_ref()
                     .and_then(|f| f.dimensions())
-                    .map_or(100, |d| d.width as i32)
+                    .map_or(100, |d| d.width.cast_signed())
             }
         }
 
@@ -190,20 +190,18 @@ mod imp {
             }
 
             #[cfg(target_os = "macos")]
+            if let Some(image_data) = self.image_data.get()
+                && let ImageData::Animated { frames, .. } = image_data.as_ref()
             {
-                if let Some(image_data) = self.image_data.get() {
-                    if let ImageData::Animated { frames, .. } = image_data.as_ref() {
-                        let mut index = self.current_frame_index.borrow_mut();
-                        *index = (*index + 1) % frames.len();
+                let mut index = self.current_frame_index.borrow_mut();
+                *index = (*index + 1) % frames.len();
 
-                        if let Some(frame_data) = frames.get(*index) {
-                            let mut frame = Frame::new_from_dynamic_image(frame_data.image.clone());
-                            if let Frame::Image { delay, .. } = &mut frame {
-                                *delay = frame_data.delay;
-                            }
-                            self.current_frame.replace(Some(Arc::new(frame)));
-                        }
+                if let Some(frame_data) = frames.get(*index) {
+                    let mut frame = Frame::new_from_dynamic_image(frame_data.image.clone());
+                    if let Frame::Image { delay, .. } = &mut frame {
+                        *delay = frame_data.delay;
                     }
+                    self.current_frame.replace(Some(Arc::new(frame)));
                 }
             }
 

@@ -134,10 +134,12 @@ glycin = { git = "https://gitlab.gnome.org/GNOME/glycin", rev = "0865d33a7870a1c
 glycin-gtk4 = { git = "https://gitlab.gnome.org/GNOME/glycin", rev = "0865d33a7870a1cb8bf35c89f75d2cfab4129ee8", package = "libglycin-gtk4-rebind" }
 
 # macOS-only dependencies.
+# `image` is a temporary replacement for glycin, which requires libseccomp
+# (a Linux-only kernel interface unavailable on macOS). This dependency should
+# be removed once libglycin gains native macOS support.
 [target.'cfg(target_os = "macos")'.dependencies]
 dirs = "6"
 image = "0.25.6"
-libc = "0.2"
 objc2 = "0.6"
 security-framework = "2"
 
